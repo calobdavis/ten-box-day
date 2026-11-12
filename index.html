@@ -398,6 +398,12 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
 @media (max-width:440px){.stats{grid-template-columns:repeat(3,minmax(0,1fr))}}
 .kinds button{padding:14px 8px}
 .status{margin-top:4px}
+
+.tchip{touch-action:none;user-select:none;-webkit-user-select:none;cursor:grab}
+.tchip.dragging{opacity:.25}
+.tchip.ghost{box-shadow:0 12px 26px -6px rgb(0 0 0 / .35);transform:scale(1.12);opacity:.95;cursor:grabbing}
+.tchip.drop-before{box-shadow:-4px 0 0 -1px var(--acc)}
+.tchip.drop-after{box-shadow:4px 0 0 -1px var(--acc)}
 </style>
 </head>
 <body>
@@ -440,8 +446,8 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
   const S = (kind, o) => Object.assign({kind, hours:1, block:60, total:4, unitName:"", parts:4}, o);
   const IDEAS = [
     {name:"Deep work",       emoji:"💻", spec:S("time",{hours:1,block:60})},
-    {name:"Water",           emoji:"💧", spec:S("amount",{total:1,unitName:"liters",parts:1})},
-    {name:"Steps",           emoji:"👟", spec:S("amount",{total:2500,unitName:"steps",parts:1})},
+    {name:"Water",           emoji:"💧", spec:S("amount",{total:1,unitName:"gallon",parts:4})},
+    {name:"Steps",           emoji:"👟", spec:S("amount",{total:10000,unitName:"steps",parts:4})},
     {name:"Supplements",     emoji:"💊", spec:S("once")},
     {name:"Workout",         emoji:"🏋️", spec:S("once")},
     {name:"Run",             emoji:"🏃", spec:S("time",{hours:0.5,block:30})},
@@ -455,14 +461,14 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
 
   // ---------- goal maths ----------
   // A goal has `count` pieces; `per` pieces make one step in the day's order.
-  function fmtNum(n){ if (n >= 1000) return (Math.round(n/100)/10)+"k"; return String(Math.round(n*100)/100); }
+  function fmtNum(n){ if (n >= 1000) return (Math.round(n/100)/10)+"k"; const fr = {0.25:"¼",0.5:"½",0.75:"¾",0.33:"⅓",0.67:"⅔",0.2:"⅕",0.13:"⅛"}[Math.round(n*100)/100]; if (fr) return fr; return String(Math.round(n*100)/100); }
   function fmtMins(m){ if (m < 60) return m+" min"; const h = m/60; return (Math.round(h*100)/100)+(h===1?" hour":" hours"); }
   function singular(u){ return /s$/i.test(u) && u.length > 3 ? u.slice(0,-1) : u; }
   function build(sp){
     if (sp.kind === "once") return {count:1, unit:"", per:1};
     if (sp.kind === "time") { const count = Math.max(1, Math.round(sp.hours*4)); return {count, unit:"15 min", per:Math.min(count, Math.max(1, sp.block/15))}; }
     const parts = Math.max(1, sp.parts), each = (+sp.total||0)/parts, un = (sp.unitName||"").trim();
-    return {count:parts, unit: un ? fmtNum(each)+" "+(each===1 ? singular(un) : un) : "", per:1};
+    return {count:parts, unit: un ? fmtNum(each)+" "+(each<=1 ? singular(un) : un) : "", per:1};
   }
   function specOf(g){
     if (g.spec) return Object.assign(S(g.spec.kind), g.spec);
@@ -476,8 +482,8 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
   function summary(sp){
     if (sp.kind === "once") return "Check off";
     if (sp.kind === "time") return fmtMins(sp.block)+" block";
-    const each = (+sp.total||0)/Math.max(1, sp.parts), un = (sp.unitName||"").trim();
-    return un ? fmtNum(each)+" "+(each===1 ? singular(un) : un) : "1 box";
+    const un = (sp.unitName||"").trim(), t = +sp.total||0;
+    return (un ? fmtNum(t)+" "+(t<=1 ? singular(un) : un) : fmtNum(t))+(sp.parts>1 ? " in "+sp.parts : "");
   }
   function guessEmoji(name){
     const n = (name||"").toLowerCase();
@@ -524,9 +530,9 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
     goals: [
       lib("weigh","Weigh self","⚖️",S("once")),
       lib("work","Work","💻",S("time",{hours:1,block:60})),
-      lib("water","Water","💧",S("amount",{total:1,unitName:"liters",parts:1})),
+      lib("water","Water","💧",S("amount",{total:1,unitName:"gallon",parts:4})),
       lib("supp","Supplements","💊",S("once")),
-      lib("steps","Steps","👟",S("amount",{total:2500,unitName:"steps",parts:1})),
+      lib("steps","Steps","👟",S("amount",{total:10000,unitName:"steps",parts:4})),
       lib("t4","Workout","🏋️",S("once")),
       lib("t3","Reading","📖",S("time",{hours:0.5,block:30})),
       lib("cal","Meet calorie goal","🥗",S("once")),
@@ -557,7 +563,14 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
       if (sp.kind === "time") sp.hours = sp.block/60;
       if (sp.kind === "amount") { sp.total = (+sp.total||0)/Math.max(1, sp.parts); sp.parts = 1; }
       return Object.assign({}, g, {spec: sp}, build(sp)); });
-    c.v = 4;
+    // v5: amount goals are a daily total split into parts; one tap in Build drops every part.
+    if ((c.v||0) < 5) c.goals = c.goals.map(g => { const sp = g.spec;
+      if (sp.kind === "amount" && (sp.parts||1) === 1) {
+        if (g.id === "water") Object.assign(sp, {total:1, unitName:"gallon", parts:4});
+        else if (g.id === "steps") Object.assign(sp, {total:10000, unitName:"steps", parts:4});
+      }
+      return Object.assign({}, g, {spec: sp}, build(sp)); });
+    c.v = 5;
     return c;
   }
   function migrateDay(d){
@@ -609,7 +622,7 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
   function commitDay(day){
     const s = scoreOf(day); day.score = s.pts; day.total = s.total; day.updated = Date.now();
     day.any = day.goals.some(g => g.cells.some(Boolean));
-    delete day.tasks; delete day.habits;
+    delete day.tasks; delete day.habits; delete day.baseline;
     cleared.delete(day.date);
     state.days[day.date] = day;
     queueWrite("d-"+day.date, day);
@@ -638,7 +651,7 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
           if (doc.id === "config") state.config = migrateConfig(data);
           else if (doc.id.startsWith("d-") && !cleared.has(data.date)) {
             const local = state.days[data.date];
-            if (!local || (data.updated||0) >= (local.updated||0)) state.days[data.date] = data;
+            if (!local || (local.baseline && !local.any) || (data.updated||0) >= (local.updated||0)) state.days[data.date] = data;
           }
         });
         if (!snap.metadata.fromCache && !dbLoaded) {
@@ -773,7 +786,17 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
   const stepLabel = (g, s) => nSteps(g) > 1 ? (s+1)+"/"+nSteps(g) : "";
   function dayName(){ const t = todayKey(); return ui.date===t ? "Today" : ui.date===shiftKey(t,-1) ? "Yesterday" : ui.date===shiftKey(t,1) ? "Tomorrow" : parseKey(ui.date).toLocaleDateString(undefined,{weekday:"long"}); }
 
+  // A day nobody has planned yet starts as a copy of the last planned day (or the usual day).
+  function ensureBaseline(){
+    if (state.days[ui.date] || ui.date < todayKey()) return;
+    const pk = prevDayKey();
+    let d = null;
+    if (pk) { const src = getDay(pk); d = dayFromOrder(ui.date, src.order, id => libGoal(id) || src.goals.find(g=>g.id===id)); }
+    else if (hasUsual()) d = dayFromOrder(ui.date, state.config.order||[], libGoal);
+    if (d && d.order.length) { commitDay(d); d.baseline = true; }
+  }
   function render(){
+    ensureBaseline();
     const t = todayKey(), d = parseKey(ui.date), tabShown = ui.screen ? "goals" : ui.tab, hist = ui.tab==="history" && !ui.screen;
     ["today","goals","history"].forEach(v => document.getElementById("tab-"+v).setAttribute("aria-selected", tabShown===v));
     document.getElementById("prev").hidden = document.getElementById("next").hidden = hist;
@@ -911,17 +934,73 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
   function prevDayKey(){ return Object.keys(state.days).filter(k => k < ui.date).sort().reverse().find(k => getDay(k).order.length > 0); }
   const hasUsual = () => (state.config.order||[]).some(o => libGoal(o[0]));
   function useUsual(){ commitDay(dayFromOrder(ui.date, state.config.order||[], libGoal)); if (timer && timer.date===ui.date) stopTimer(); toast("Built from your usual day."); render(); }
-  function copyPrev(){ const k = prevDayKey(); if (!k) return; const src = getDay(k); commitDay(dayFromOrder(ui.date, src.order, id => src.goals.find(g=>g.id===id))); if (timer && timer.date===ui.date) stopTimer(); toast("Copied your last day."); render(); }
+  function copyPrev(){ const k = prevDayKey(); if (!k) return; const src = getDay(k); commitDay(dayFromOrder(ui.date, src.order, id => libGoal(id) || src.goals.find(g=>g.id===id))); if (timer && timer.date===ui.date) stopTimer(); toast("Copied your last day."); render(); }
   function addStep(id, quiet){
     const L = libGoal(id); if (!L) return;
     const day = clone(getDay(ui.date)); let g = day.goals.find(x=>x.id===id);
+    const fresh = !g;
     if (!g) { g = {id, name:L.name, emoji:L.emoji, spec:clone(L.spec), per:L.per, unit:L.unit, count:0, cells:[]}; day.goals.push(g); }
+    if (fresh && L.spec.kind === "amount" && L.count > 1) {
+      // A daily total: drop every part at once, spread evenly through what's already planned.
+      g.cells = Array(L.count).fill(0); g.count = L.count;
+      day.order = insertSpread(day.order, g);
+      commitDay(day); ui.pop = "set:"+id; buzz([8,30,8]);
+      toast(L.emoji+" "+L.count+" × "+L.unit+" spread through the day");
+      if (!quiet) render();
+      return;
+    }
     while (g.cells.length % g.per) g.cells.push(0);
     const s = g.cells.length / g.per;
     for (let i=0;i<g.per;i++) g.cells.push(0);
     g.count = g.cells.length; day.order.push([id, s]);
     commitDay(day); ui.pop = "last:"+id; buzz(8);
     if (!quiet) render();
+  }
+  // Drag a box in the Build row to a new spot.
+  function moveStep(from, to){
+    if (from === to) return;
+    const day = clone(getDay(ui.date)), item = day.order.splice(from,1)[0];
+    day.order.splice(to, 0, item);
+    day.order = normalizeOrder(day.order, day.goals);
+    commitDay(day); buzz(6); render();
+  }
+  function wireDrag(){
+    const tr = document.getElementById("trail"); if (!tr) return;
+    let st = null;
+    const chips = () => Array.from(tr.querySelectorAll(".tchip"));
+    tr.addEventListener("pointerdown", e => {
+      const c = e.target.closest(".tchip"); if (!c) return;
+      st = {c, from:+c.dataset.rm, x:e.clientX, y:e.clientY, drag:false, ghost:null, to:+c.dataset.rm, id:e.pointerId};
+    });
+    tr.addEventListener("pointermove", e => {
+      if (!st || e.pointerId !== st.id) return;
+      if (!st.drag) {
+        if (Math.hypot(e.clientX-st.x, e.clientY-st.y) < 8) return;
+        st.drag = true; try { st.c.setPointerCapture(e.pointerId); } catch(_){}
+        const r = st.c.getBoundingClientRect(), g = st.c.cloneNode(true);
+        g.className += " ghost"; Object.assign(g.style, {position:"fixed", left:r.left+"px", top:r.top+"px", width:r.width+"px", height:r.height+"px", margin:0, pointerEvents:"none", zIndex:70});
+        document.body.appendChild(g); st.ghost = g; st.ox = e.clientX - r.left; st.oy = e.clientY - r.top;
+        st.c.classList.add("dragging"); buzz(6);
+      }
+      e.preventDefault();
+      st.ghost.style.left = (e.clientX - st.ox)+"px"; st.ghost.style.top = (e.clientY - st.oy)+"px";
+      // Nearest chip centre decides the drop spot; drop before it, or after it past its middle.
+      let best = null, bd = Infinity;
+      chips().forEach(ch => { const r = ch.getBoundingClientRect(), cx = r.left+r.width/2, cy = r.top+r.height/2, d = Math.hypot(e.clientX-cx, (e.clientY-cy)*1.6); if (d < bd) { bd = d; best = {ch, after: e.clientX > cx}; } });
+      chips().forEach(ch => ch.classList.remove("drop-before","drop-after"));
+      if (best && best.ch !== st.c) {
+        best.ch.classList.add(best.after ? "drop-after" : "drop-before");
+        let to = +best.ch.dataset.rm + (best.after ? 1 : 0); if (to > st.from) to--; st.to = to;
+      } else st.to = st.from;
+    });
+    const end = e => {
+      if (!st || e.pointerId !== st.id) return;
+      const s0 = st; st = null;
+      if (!s0.drag) return;
+      s0.ghost.remove(); ui.dragged = true; setTimeout(() => { ui.dragged = false; }, 50);
+      moveStep(s0.from, s0.to);
+    };
+    tr.addEventListener("pointerup", end); tr.addEventListener("pointercancel", end);
   }
   function removeAt(i){
     const day = clone(getDay(ui.date)); if (!day.order[i]) return;
@@ -935,30 +1014,32 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
   function renderBuild(day){
     const dn = dayName(), byId = Object.fromEntries(day.goals.map(g=>[g.id,g])), counts = {}, total = day.order.length;
     day.order.forEach(([id]) => { counts[id] = (counts[id]||0)+1; });
-    const popId = (ui.pop||"").startsWith("last:") ? ui.pop.slice(5) : null, ed = !!ui.editGoals;
+    const popId = (ui.pop||"").startsWith("last:") ? ui.pop.slice(5) : null, setId = (ui.pop||"").startsWith("set:") ? ui.pop.slice(4) : null, ed = !!ui.editGoals;
     let a = '<div class="listhead"><h1>Build '+esc(dn.toLowerCase())+'</h1><button class="iconbtn" id="editgoals" aria-pressed="'+ed+'" aria-label="Edit goals">'+PENCIL+'</button></div><div class="palette">';
     state.config.goals.forEach(g => { const n = counts[g.id]||0;
       a += '<button class="ptile'+(n?' on':'')+(ed?' editing':'')+'" '+(ed?'data-editgoal':'data-add')+'="'+esc(g.id)+'" aria-label="'+(ed?'Edit ':'Add ')+esc(g.name)+'"><span class="tem">'+esc(g.emoji)+'</span><span class="tname">'+esc(g.name)+'</span>'
-        + (n && !ed?'<span class="pcount'+(popId===g.id?' pop':'')+'">'+n+'</span>':'')+'</button>'; });
+        + (n && !ed?'<span class="pcount'+(popId===g.id||setId===g.id?' pop':'')+'">'+n+'</span>':'')+'</button>'; });
     a += '<button class="ptile new" id="newgoal" aria-label="New goal"><span>+</span></button></div>';
 
     let b = '<div class="trail" id="trail">';
     if (!total) b += '<p class="hint">Tap goals in the order you\'ll do them.</p>';
     day.order.forEach(([id,s], i) => { const g = byId[id], anchor = g.unit === "15 min", m = g.per*15;
-      b += '<button class="tchip'+(anchor?' a':'')+(stepDone(g,s)?' is-done':'')+(popId && i===total-1?' pop':'')+'" data-rm="'+i+'" aria-label="Remove '+esc(g.name)+', box '+(i+1)+'">'+esc(g.emoji)+(anchor?'<small>'+(m<60?m+'m':(m/60)+'h')+'</small>':'')+'</button>'; });
+      b += '<button class="tchip'+(anchor?' a':'')+(stepDone(g,s)?' is-done':'')+((popId && i===total-1) || setId===id?' pop':'')+'" data-rm="'+i+'" aria-label="'+esc(g.name)+', box '+(i+1)+'. Drag to move, tap to remove.">'+esc(g.emoji)+(anchor?'<small>'+(m<60?m+'m':(m/60)+'h')+'</small>':'')+'</button>'; });
     b += '</div>';
     if (!total) b += shortcutsPlain();
     else if (ui.confirmClear) b += '<div class="confirm"><span>Remove every box from this day?</span><div class="toolbar"><button class="btn" id="keepday">Keep</button><button class="btn danger" id="clearbuildyes">Clear</button></div></div>';
     else b += '<button class="btn primary wide" id="startday">'+(ui.date > todayKey()?'Done':'Start')+'</button><div class="foot"><button class="linkbtn" id="saveusual">Save as usual day</button><button class="linkbtn" id="uncheck">Uncheck all</button><button class="linkbtn" id="clearbuild">Clear</button></div>';
     const ds = state.config.dayStart ?? 6, de = state.config.dayEnd ?? 22, opt = (from, to, v) => { let o = ''; for (let h=from;h<=to;h++) o += '<option value="'+h+'"'+(h===v?' selected':'')+'>'+hourLabel(h)+'</option>'; return o; };
     b += '<div class="dayrun"><label for="ds">Day</label><select id="ds" aria-label="Day starts">'+opt(0,de-1,ds)+'</select>–<select id="de" aria-label="Day ends">'+opt(ds+1,24,de)+'</select></div>';
+    if (total > 1) b += '<p class="hint" style="text-align:center">Drag a box to move it. Tap to remove.</p>';
     view.innerHTML = '<div class="cols"><div class="colA">'+a+'</div><div class="colB">'+b+'</div></div>';
     ui.pop = null;
+    wireDrag();
   }
   const shortcutsPlain = () => { const pk = prevDayKey(); return (hasUsual()||pk) ? '<div class="toolbar">'+(hasUsual()?'<button class="btn" id="useusual">Usual day</button>':'')+(pk?'<button class="btn" id="copyprev">Last day</button>':'')+'</div>' : ''; };
 
   // ---------- new goal: ideas, then a short form ----------
-  const norm = sp => { if (sp.kind === "time") sp.hours = sp.block/60; if (sp.kind === "amount") sp.parts = 1; return sp; };
+  const norm = sp => { if (sp.kind === "time") sp.hours = sp.block/60; if (sp.kind === "amount") sp.parts = Math.max(1, Math.min(12, sp.parts||1)); return sp; };
   function renderPick(){
     const have = new Set(state.config.goals.map(g=>g.name.toLowerCase()));
     let h = '<button class="back" id="back">‹ Back</button><h1>New goal</h1><div class="palette">';
@@ -973,7 +1054,9 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
       + '<div class="emojis">'+EMOJI.map(e=>'<button data-emoji="'+e+'" aria-pressed="'+(d.emoji===e)+'" aria-label="Icon '+e+'">'+e+'</button>').join("")+'</div>'
       + '<div class="kinds">'+[["once","Check off"],["time","Time"],["amount","Amount"]].map(([k,l])=>'<button data-kind="'+k+'" aria-pressed="'+(sp.kind===k)+'"><b>'+l+'</b></button>').join("")+'</div>';
     if (sp.kind === "time") h += '<div class="field"><span class="flabel">One box is</span><div class="chips">'+[15,30,60,120].map(m=>'<button data-block="'+m+'" aria-pressed="'+(sp.block===m)+'">'+fmtMins(m)+'</button>').join("")+'</div></div>';
-    else if (sp.kind === "amount") h += '<div class="field"><span class="flabel">One box is</span><div class="pair" style="flex-wrap:nowrap"><input type="number" inputmode="decimal" min="0" id="f-total" value="'+esc(sp.total)+'" aria-label="Amount per box" style="flex:0 0 38%"><input type="text" id="f-unit" value="'+esc(sp.unitName)+'" placeholder="liters, steps…" maxlength="20" aria-label="Unit"></div></div>';
+    else if (sp.kind === "amount") { const f = build(norm(clone(sp)));
+      h += '<div class="field"><span class="flabel">Daily total</span><div class="pair" style="flex-wrap:nowrap"><input type="number" inputmode="decimal" min="0" id="f-total" value="'+esc(sp.total)+'" aria-label="Daily total" style="flex:0 0 38%"><input type="text" id="f-unit" value="'+esc(sp.unitName)+'" placeholder="gallon, steps…" maxlength="20" aria-label="Unit"></div></div>'
+        + '<div class="field"><span class="flabel">Split into</span><div class="pair"><span class="stepper"><button data-parts="-1" aria-label="Fewer parts">−</button><output>'+sp.parts+'</output><button data-parts="1" aria-label="More parts">+</button></span><span id="f-each">'+(sp.parts>1 && f.unit ? esc(sp.parts+' × '+f.unit) : '')+'</span></div></div>'; }
     h += '<button class="btn primary wide" id="f-save">Save</button>';
     if (!d.isNew) h += ui.confirmDelete
       ? '<div class="confirm"><span>Delete "'+esc(d.name)+'"?</span><div class="toolbar"><button class="btn" id="f-keep">Keep</button><button class="btn danger" id="f-delyes">Delete</button></div></div>'
@@ -987,13 +1070,15 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
     if (el.id === "f-name") { d.name = el.value; if (d.autoEmoji) { const g = guessEmoji(d.name); if (g !== "⭐" && g !== d.emoji) { d.emoji = g; view.querySelector(".bigem").textContent = g; view.querySelectorAll("[data-emoji]").forEach(b => b.setAttribute("aria-pressed", b.dataset.emoji===g)); } } }
     if (el.id === "f-total") d.spec.total = Math.max(0, parseFloat(el.value)||0);
     if (el.id === "f-unit") d.spec.unitName = el.value;
+    const fe = document.getElementById("f-each"); if (fe) { const f = build(norm(clone(d.spec))); fe.textContent = d.spec.parts > 1 && f.unit ? d.spec.parts+" × "+f.unit : ""; }
   });
   function formClick(b){
     const d = ui.draft, sp = d.spec;
     if (b.id === "back") { ui.screen = d.isNew ? "pick" : null; ui.confirmDelete = false; return render(); }
     if (b.dataset.emoji) { d.emoji = b.dataset.emoji; d.autoEmoji = false; return renderForm(true); }
-    if (b.dataset.kind) { sp.kind = b.dataset.kind; if (sp.kind === "amount" && !(+sp.total > 0)) sp.total = 1; return renderForm(true); }
+    if (b.dataset.kind) { sp.kind = b.dataset.kind; if (sp.kind === "amount") { if (!(+sp.total > 0)) sp.total = 1; if (!(sp.parts >= 1)) sp.parts = 1; } return renderForm(true); }
     if (b.dataset.block) { sp.block = +b.dataset.block; return renderForm(true); }
+    if (b.dataset.parts) { sp.parts = Math.max(1, Math.min(12, (sp.parts||1) + +b.dataset.parts)); return renderForm(true); }
     if (b.id === "f-del") { ui.confirmDelete = true; return renderForm(true); }
     if (b.id === "f-keep") { ui.confirmDelete = false; return renderForm(true); }
     if (b.id === "f-delyes") {
@@ -1011,7 +1096,12 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
       commitConfig();
       if (state.days[ui.date]) {
         const day = clone(getDay(ui.date)), cur = day.goals.find(x=>x.id===g.id);
-        if (cur) {
+        if (cur && sp.kind === "amount") {
+          const done = cur.cells.filter(Boolean).length, cells = Array(g.count).fill(0); for (let k=0;k<Math.min(done,g.count);k++) cells[k] = 1;
+          Object.assign(cur, {name, emoji:g.emoji, spec:clone(sp), per:1, unit:g.unit, count:g.count, cells});
+          day.order = insertSpread(day.order.filter(o => o[0] !== g.id), cur);
+          commitDay(day);
+        } else if (cur) {
           const n = nSteps(cur), cells = Array(n*g.per).fill(0);
           if (cur.per === g.per) cur.cells.slice(0, cells.length).forEach((v,k) => cells[k] = v);
           else for (let s=0;s<n;s++) if (stepDone(cur,s)) for (let k=0;k<g.per;k++) cells[s*g.per+k] = 1;
@@ -1047,7 +1137,7 @@ button.ptile .tname{font-size:13px;font-weight:700;line-height:1.15;overflow-wra
     if (b.id === "copyprev") return copyPrev();
     if (ui.tab === "goals") {
       if (b.dataset.add) return addStep(b.dataset.add);
-      if (b.dataset.rm !== undefined) return removeAt(+b.dataset.rm);
+      if (b.dataset.rm !== undefined) { if (ui.dragged) return; return removeAt(+b.dataset.rm); }
       if (b.id === "startday") { ui.tab = "today"; ui.note = ""; render(); return window.scrollTo(0,0); }
       if (b.id === "saveusual") { state.config.order = clone(getDay(ui.date).order); commitConfig(); return toast("Saved as your usual day"); }
       if (b.id === "uncheck") { const day = clone(getDay(ui.date)); day.goals.forEach(g => g.cells.fill(0)); if (timer && timer.date===ui.date) stopTimer(); commitDay(day); toast("All boxes unchecked"); return render(); }
